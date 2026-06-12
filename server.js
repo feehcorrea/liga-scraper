@@ -14,16 +14,10 @@ const PROXY_DISABLED = process.env.PROXY_DISABLED === 'true'
 
 async function getBrowser() {
   if (browser?.isConnected()) return browser
-  const proxyConfig = (!PROXY_DISABLED && PROXY_USER) ? {
-    server:   'http://gate.decodo.com:10001',
-    username: PROXY_USER,
-    password: PROXY_PASS,
-  } : undefined
-
-  console.log('[browser] lançando | proxy:', proxyConfig ? 'decodo' : 'direto')
+  // Testando SEM proxy — IP direto do Render
+  console.log('[browser] lançando sem proxy')
   browser = await chromium.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    proxy: proxyConfig,
   })
 
   // Visita a página principal da Liga para obter o cookie cf_clearance
