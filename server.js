@@ -1,49 +1,64 @@
-const express     = require('express')
+const express      = require('express')
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 
 chromium.use(StealthPlugin())
 
 const app = express()
-let browser = null
+let browser     = null
+let warmStatus  = { done: false, title: '', hasCookie: false }
 
 const PROXY_USER = process.env.DECODO_USER
 const PROXY_PASS = process.env.DECODO_PASS
-// SET PROXY_DISABLED=true para testar sem proxy
-const PROXY_DISABLED = process.env.PROXY_DISABLED === 'true'
+
+const HEADERS = {
+  'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8',
+  'Referer':         'https://www.ligapokemon.com.br/',
+}
 
 async function getBrowser() {
   if (browser?.isConnected()) return browser
-  // Sticky session: mesmo IP para toda a sessão (alphanumeric apenas)
-  const sessionId = 'ps' + Date.now().toString(36)  // ex: "psooo64800"
-  console.log('[browser] lançando | sticky session:', sessionId)
+
   browser = await chromium.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
     proxy: PROXY_USER ? {
       server:   'http://gate.decodo.com:10001',
-      username: `${PROXY_USER}-session-${sessionId}`,
+      username: PROXY_USER,
       password: PROXY_PASS,
     } : undefined,
   })
 
-  // Visita a página principal da Liga para obter o cookie cf_clearance
-  // Assim as páginas de cartas pulam o Cloudflare challenge
-  const warmPage = await browser.newPage()
+  // Pre-warm: visita página principal para resolver Cloudflare e obter cf_clearance
+  const wp = await browser.newPage()
   try {
-    await warmPage.setExtraHTTPHeaders({ 'Accept-Language': 'pt-BR,pt;q=0.9' })
-    await warmPage.goto('https://www.ligapokemon.com.br/', { waitUntil: 'networkidle', timeout: 30000 })
-    const title = await warmPage.title().catch(() => '?')
-    console.log('[browser] pre-aquecido | Liga title:', title)
+    await wp.setExtraHTTPHeaders(HEADERS)
+    const wpResponses = []
+    wp.on('response', r => {
+      if (r.url().includes('ligapokemon') || r.url().includes('cloudflare'))
+        wpResponses.push(`${r.status()} ${r.url().slice(0,70)}`)
+    })
+
+    await wp.goto('https://www.ligapokemon.com.br/', { waitUntil: 'networkidle', timeout: 30000 })
+
+    // Espera cf_clearance cookie
+    const ctx     = browser.contexts()[0]
+    const cookies = await ctx.cookies('https://www.ligapokemon.com.br')
+    const hasCf   = cookies.some(c => c.name === 'cf_clearance')
+    const title   = await wp.title().catch(() => '?')
+
+    warmStatus = { done: true, title, hasCookie: hasCf, responses: wpResponses }
+    console.log('[warm] title:', title, '| cf_clearance:', hasCf, '| responses:', wpResponses)
   } catch (e) {
-    console.warn('[browser] falha no pre-aquecimento:', e.message)
+    warmStatus = { done: true, error: e.message }
+    console.warn('[warm] erro:', e.message)
   } finally {
-    await warmPage.close()
+    await wp.close()
   }
 
   return browser
 }
 
-app.get('/ping', (_req, res) => res.json({ ok: true, proxy: !PROXY_DISABLED && !!PROXY_USER }))
+app.get('/ping', (_req, res) => res.json({ ok: true, warm: warmStatus }))
 
 app.get('/fetch', async (req, res) => {
   const url = req.query.url
@@ -53,57 +68,39 @@ app.get('/fetch', async (req, res) => {
   try {
     const b = await getBrowser()
     page = await b.newPage()
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'pt-BR,pt;q=0.9',
-      'Referer':         'https://www.ligapokemon.com.br/',
-    })
+    await page.setExtraHTTPHeaders(HEADERS)
 
-    // Log de todas as respostas HTTP para debug
     const responses = []
     page.on('response', r => {
-      if (r.url().includes('ligapokemon') || r.url().includes('cloudflare')) {
-        responses.push(`${r.status()} ${r.url().slice(0, 80)}`)
-      }
+      if (r.url().includes('ligapokemon') || r.url().includes('cloudflare'))
+        responses.push(`${r.status()} ${r.url().slice(0,70)}`)
     })
 
-    // networkidle espera o Cloudflare challenge executar JS e redirecionar
     await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 })
 
     const title1 = await page.title().catch(() => '')
-    console.log('[fetch] após goto | title:', title1)
-
-    // Se ainda no challenge, aguarda navegar para a página real (até 20s)
     if (title1.includes('momento') || title1.includes('moment')) {
-      console.log('[fetch] ainda no challenge, aguardando navegação...')
+      console.log('[fetch] ainda no challenge, aguardando...')
       await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
     }
 
-    // Garante que estamos na URL da Liga (não numa página de erro)
-    await page.waitForURL(/ligapokemon\.com\.br/, { timeout: 15000 }).catch(() => {})
-
-    // Espera o DOM estar pronto
-    await page.waitForLoadState('domcontentloaded').catch(() => {})
-
-    // Aguarda dados da Liga aparecerem no DOM (até 15s)
     await page.waitForFunction(
       () => typeof window.cards_editions !== 'undefined' || typeof window.cards_stock !== 'undefined',
       { timeout: 15000 }
     ).catch(() => {})
 
-    // Usa evaluate para garantir que pega o HTML atual (não de uma navegação anterior)
     const html  = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
     const title = await page.title().catch(() => '?')
     const pgUrl = page.url()
 
-    console.log('[fetch] url final:', pgUrl, '| title:', title, '| size:', html.length)
+    console.log('[fetch] url:', pgUrl, '| title:', title, '| size:', html.length, '| responses:', responses)
 
     if (html.includes('cards_editions') || html.includes('cards_stock')) {
-      console.log('[fetch] OK!')
+      console.log('[fetch] SUCCESS!')
       return res.send(html)
     }
 
-    console.warn('[fetch] responses:', responses)
-    return res.status(502).json({ error: 'sem conteúdo da Liga', title, url: pgUrl, size: html.length, responses, preview: html.slice(0, 300) })
+    return res.status(502).json({ error: 'sem conteúdo da Liga', title, url: pgUrl, size: html.length, responses, warm: warmStatus })
 
   } catch (e) {
     console.error('[fetch] erro:', e.message)
@@ -116,4 +113,4 @@ app.get('/fetch', async (req, res) => {
 })
 
 const PORT = process.env.PORT || 3000
-app.listen(PORT, () => console.log(`liga-scraper porta ${PORT} | proxy: ${!PROXY_DISABLED && !!PROXY_USER ? 'decodo' : 'direto'}`))
+app.listen(PORT, () => console.log(`liga-scraper porta ${PORT}`))
