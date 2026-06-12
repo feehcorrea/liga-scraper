@@ -20,11 +20,26 @@ async function getBrowser() {
     password: PROXY_PASS,
   } : undefined
 
-  console.log('[browser] proxy:', proxyConfig ? 'decodo' : 'direto')
+  console.log('[browser] lançando | proxy:', proxyConfig ? 'decodo' : 'direto')
   browser = await chromium.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
     proxy: proxyConfig,
   })
+
+  // Visita a página principal da Liga para obter o cookie cf_clearance
+  // Assim as páginas de cartas pulam o Cloudflare challenge
+  const warmPage = await browser.newPage()
+  try {
+    await warmPage.setExtraHTTPHeaders({ 'Accept-Language': 'pt-BR,pt;q=0.9' })
+    await warmPage.goto('https://www.ligapokemon.com.br/', { waitUntil: 'networkidle', timeout: 30000 })
+    const title = await warmPage.title().catch(() => '?')
+    console.log('[browser] pre-aquecido | Liga title:', title)
+  } catch (e) {
+    console.warn('[browser] falha no pre-aquecimento:', e.message)
+  } finally {
+    await warmPage.close()
+  }
+
   return browser
 }
 
