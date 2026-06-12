@@ -59,6 +59,14 @@ app.get('/fetch', async (req, res) => {
       'Referer':         'https://www.ligapokemon.com.br/',
     })
 
+    // Log de todas as respostas HTTP para debug
+    const responses = []
+    page.on('response', r => {
+      if (r.url().includes('ligapokemon') || r.url().includes('cloudflare')) {
+        responses.push(`${r.status()} ${r.url().slice(0, 80)}`)
+      }
+    })
+
     // networkidle espera o Cloudflare challenge executar JS e redirecionar
     await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 })
 
@@ -95,7 +103,8 @@ app.get('/fetch', async (req, res) => {
       return res.send(html)
     }
 
-    return res.status(502).json({ error: 'sem conteúdo da Liga', title, url: pgUrl, size: html.length, preview: html.slice(0, 500) })
+    console.warn('[fetch] responses:', responses)
+    return res.status(502).json({ error: 'sem conteúdo da Liga', title, url: pgUrl, size: html.length, responses, preview: html.slice(0, 300) })
 
   } catch (e) {
     console.error('[fetch] erro:', e.message)
