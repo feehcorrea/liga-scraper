@@ -1,4 +1,4 @@
-const express    = require('express')
+const express     = require('express')
 const { chromium } = require('playwright-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 
@@ -9,22 +9,26 @@ let browser = null
 
 const PROXY_USER = process.env.DECODO_USER
 const PROXY_PASS = process.env.DECODO_PASS
+// SET PROXY_DISABLED=true para testar sem proxy
+const PROXY_DISABLED = process.env.PROXY_DISABLED === 'true'
 
 async function getBrowser() {
   if (browser?.isConnected()) return browser
+  const proxyConfig = (!PROXY_DISABLED && PROXY_USER) ? {
+    server:   'http://gate.decodo.com:10001',
+    username: PROXY_USER,
+    password: PROXY_PASS,
+  } : undefined
+
+  console.log('[browser] proxy:', proxyConfig ? 'decodo' : 'direto')
   browser = await chromium.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    proxy: PROXY_USER ? {
-      server:   'http://gate.decodo.com:10001',
-      username: PROXY_USER,
-      password: PROXY_PASS,
-    } : undefined,
+    proxy: proxyConfig,
   })
-  console.log('[browser] launched')
   return browser
 }
 
-app.get('/ping', (_req, res) => res.json({ ok: true }))
+app.get('/ping', (_req, res) => res.json({ ok: true, proxy: !PROXY_DISABLED && !!PROXY_USER }))
 
 app.get('/fetch', async (req, res) => {
   const url = req.query.url
@@ -39,23 +43,31 @@ app.get('/fetch', async (req, res) => {
       'Referer':         'https://www.ligapokemon.com.br/',
     })
 
+    // Primeira navegação
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
 
-    // Aguarda Cloudflare resolver (máx 15s) — stealth evita o challenge
+    // Se caiu no Cloudflare challenge, espera resolver (até 20s)
+    const title1 = await page.title().catch(() => '')
+    if (title1.includes('momento') || title1.includes('moment')) {
+      console.log('[fetch] Cloudflare challenge detectado, aguardando...')
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
+    }
+
+    // Aguarda dados da Liga aparecerem no DOM
     await page.waitForFunction(
       () => typeof window.cards_editions !== 'undefined' || typeof window.cards_stock !== 'undefined',
-      { timeout: 15000 }
+      { timeout: 10000 }
     ).catch(() => {})
 
-    const html = await page.content()
+    const html  = await page.content()
     const title = await page.title().catch(() => '?')
 
     if (html.includes('cards_editions') || html.includes('cards_stock')) {
-      console.log('[fetch] OK -', url, '| title:', title, '| size:', html.length)
+      console.log('[fetch] OK | title:', title, '| size:', html.length)
       return res.send(html)
     }
 
-    console.warn('[fetch] sem conteúdo | title:', title, '| preview:', html.slice(0, 200))
+    console.warn('[fetch] sem conteúdo | title:', title)
     return res.status(502).json({ error: 'sem conteúdo da Liga', title, preview: html.slice(0, 300) })
 
   } catch (e) {
@@ -69,4 +81,4 @@ app.get('/fetch', async (req, res) => {
 })
 
 const PORT = process.env.PORT || 3000
-app.listen(PORT, () => console.log(`liga-scraper rodando na porta ${PORT}`))
+app.listen(PORT, () => console.log(`liga-scraper porta ${PORT} | proxy: ${!PROXY_DISABLED && !!PROXY_USER ? 'decodo' : 'direto'}`))
