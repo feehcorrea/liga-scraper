@@ -43,17 +43,19 @@ app.get('/fetch', async (req, res) => {
       'Referer':         'https://www.ligapokemon.com.br/',
     })
 
-    // Primeira navegação
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    // networkidle espera o Cloudflare challenge executar JS e redirecionar
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 })
 
-    // Se caiu no Cloudflare challenge, espera resolver (até 20s)
     const title1 = await page.title().catch(() => '')
+    console.log('[fetch] após goto | title:', title1)
+
+    // Se ainda no challenge, aguarda navegar para a página real (até 20s)
     if (title1.includes('momento') || title1.includes('moment')) {
-      console.log('[fetch] Cloudflare challenge detectado, aguardando...')
-      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
+      console.log('[fetch] ainda no challenge, aguardando navegação...')
+      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
     }
 
-    // Aguarda dados da Liga aparecerem no DOM
+    // Aguarda dados da Liga aparecerem no DOM (até 10s)
     await page.waitForFunction(
       () => typeof window.cards_editions !== 'undefined' || typeof window.cards_stock !== 'undefined',
       { timeout: 10000 }
