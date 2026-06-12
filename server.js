@@ -60,6 +60,29 @@ async function getBrowser() {
 
 app.get('/ping', (_req, res) => res.json({ ok: true, warm: warmStatus }))
 
+// Testa se o Render consegue acessar o HTML completo da carta (cards_stock)
+app.get('/test-card-html', async (req, res) => {
+  const url = req.query.url || 'https://www.ligapokemon.com.br/?view=cards/card&tipo=1&card=Charizard+ex+(006/165)'
+  try {
+    const r = await fetch(String(url), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Referer': 'https://www.ligapokemon.com.br/',
+      }
+    })
+    const html = await r.text()
+    res.json({
+      status:       r.status,
+      has_stock:    html.includes('cards_stock'),
+      has_editions: html.includes('cards_editions'),
+      cloudflare:   html.includes('Just a moment') || html.includes('Um momento'),
+      size:         html.length,
+    })
+  } catch (e) { res.status(500).json({ error: String(e) }) }
+})
+
 // ── Proxy de preços da Liga (Render tem IP não bloqueado) ────────────────────
 const LIGA_AJAX = 'https://www.ligapokemon.com.br/ajax/cards/main.php'
 const AJAX_HDR  = {
