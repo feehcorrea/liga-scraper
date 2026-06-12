@@ -1,0 +1,12 @@
+{
+  "name": "liga-scraper",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "playwright-core": "^1.44.0"
+  }
+}
