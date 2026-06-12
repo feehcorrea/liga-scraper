@@ -79,14 +79,16 @@ app.get('/fetch', async (req, res) => {
 
     const html  = await page.content()
     const title = await page.title().catch(() => '?')
+    const pgUrl = page.url()
+
+    console.log('[fetch] url final:', pgUrl, '| title:', title, '| size:', html.length)
 
     if (html.includes('cards_editions') || html.includes('cards_stock')) {
-      console.log('[fetch] OK | title:', title, '| size:', html.length)
+      console.log('[fetch] OK!')
       return res.send(html)
     }
 
-    console.warn('[fetch] sem conteúdo | title:', title)
-    return res.status(502).json({ error: 'sem conteúdo da Liga', title, preview: html.slice(0, 300) })
+    return res.status(502).json({ error: 'sem conteúdo da Liga', title, url: pgUrl, size: html.length, preview: html.slice(0, 500) })
 
   } catch (e) {
     console.error('[fetch] erro:', e.message)
