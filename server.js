@@ -103,7 +103,8 @@ function parsePrice(s) {
 
 function parseAjaxHtml(html) {
   const cards = []
-  const re = /card=[^&"]+\((\d+[^)]+)\)[^"]*"[\s\S]*?price-min">([^<]*)[\s\S]*?price-avg">([^<]*)[\s\S]*?price-max">([^<]*)/g
+  // Aceita qualquer formato de número: 006/165, TG01/TG30, GG01/GG70, SV001/SV122, etc.
+  const re = /card=[^&"]+\(([^)]+)\)[^"]*"[\s\S]*?price-min">([^<]*)[\s\S]*?price-avg">([^<]*)[\s\S]*?price-max">([^<]*)/g
   let m
   while ((m = re.exec(html)) !== null) {
     const [num, total] = m[1].split('/')
@@ -113,15 +114,22 @@ function parseAjaxHtml(html) {
   return cards
 }
 
-// GET /liga-prices?name=Charizard&num=006&total=165
+// GET /liga-prices?name=Charizard+ex&num=006&total=165&ref=Charizard+ex+006/165
 app.get('/liga-prices', async (req, res) => {
-  const { name, num, total } = req.query
+  const { name, num, total, ref } = req.query
   if (!name || !num || !total) return res.status(400).json({ error: 'name, num, total obrigatórios' })
 
-  const numPad   = String(num).padStart(3, '0')
-  const baseName = String(name).split(/[\s-]/)[0]
-  const search   = `${baseName} ${numPad}/${total}`
-  let   key      = 'init'
+  // ref = referência pré-formatada pelo Vercel usando ligaCardRef (nome completo + número correto)
+  // Fallback: usa primeira palavra do nome + número com pad3
+  const numPad = String(num).padStart(3, '0')
+  const search = ref
+    ? String(ref)
+    : `${String(name).split(/[\s-]/)[0]} ${numPad}/${total}`
+
+  // Para matching: normaliza número removendo zeros à esquerda para comparar
+  const numNorm = String(num).replace(/^0+(\d)/, '$1')
+
+  let key = 'init'
 
   for (let page = 1; page <= 3; page++) {
     try {
@@ -132,7 +140,12 @@ app.get('/liga-prices', async (req, res) => {
       const json = await r.json()
       key        = json.key ?? key
       const cards = parseAjaxHtml(json.html ?? '')
-      const match = cards.find(c => c.num.padStart(3, '0') === numPad && c.total === String(total))
+
+      // Tenta match exato primeiro, depois match por número normalizado
+      const match = cards.find(c => {
+        const cNorm = c.num.replace(/^0+(\d)/, '$1')
+        return (c.num === String(num) || c.num === numPad || cNorm === numNorm)
+      })
 
       if (match && (match.avg ?? 0) > 0) {
         return res.json({ avg: match.avg, min: match.min, max: match.max, found: true })
