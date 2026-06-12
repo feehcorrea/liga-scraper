@@ -60,29 +60,66 @@ async function getBrowser() {
 
 app.get('/ping', (_req, res) => res.json({ ok: true, warm: warmStatus }))
 
-// Proxy simples para o AJAX da Liga — sem Playwright, só fetch
-app.get('/ajax-prices', async (req, res) => {
-  const { search } = req.query
-  if (!search) return res.status(400).json({ error: 'search obrigatório' })
-  try {
-    const body = new URLSearchParams({
-      opc: 'nextPage', page: '1', totalReg: '0', tipo: '1',
-      search: String(search), orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key: 'init',
-    })
-    const r = await fetch('https://www.ligapokemon.com.br/ajax/cards/main.php', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'pt-BR,pt;q=0.9',
-      },
-      body: body.toString(),
-    })
-    res.json({ status: r.status, ok: r.ok, size: (await r.text()).length })
-  } catch (e) {
-    res.status(500).json({ error: String(e) })
+// ── Proxy de preços da Liga (Render tem IP não bloqueado) ────────────────────
+const LIGA_AJAX = 'https://www.ligapokemon.com.br/ajax/cards/main.php'
+const AJAX_HDR  = {
+  'Content-Type':     'application/x-www-form-urlencoded',
+  'X-Requested-With': 'XMLHttpRequest',
+  'User-Agent':       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+  'Accept-Language':  'pt-BR,pt;q=0.9',
+}
+
+function parsePrice(s) {
+  const m = String(s).trim().match(/[\d.,]+/)
+  if (!m) return null
+  const v = parseFloat(m[0].replace(/\./g, '').replace(',', '.'))
+  return isNaN(v) ? null : v
+}
+
+function parseAjaxHtml(html) {
+  const cards = []
+  const re = /card=[^&"]+\((\d+[^)]+)\)[^"]*"[\s\S]*?price-min">([^<]*)[\s\S]*?price-avg">([^<]*)[\s\S]*?price-max">([^<]*)/g
+  let m
+  while ((m = re.exec(html)) !== null) {
+    const [num, total] = m[1].split('/')
+    if (!num || !total) continue
+    cards.push({ num: num.trim(), total: total.trim(), min: parsePrice(m[2]), avg: parsePrice(m[3]), max: parsePrice(m[4]) })
   }
+  return cards
+}
+
+// GET /liga-prices?name=Charizard&num=006&total=165
+app.get('/liga-prices', async (req, res) => {
+  const { name, num, total } = req.query
+  if (!name || !num || !total) return res.status(400).json({ error: 'name, num, total obrigatórios' })
+
+  const numPad   = String(num).padStart(3, '0')
+  const baseName = String(name).split(/[\s-]/)[0]
+  const search   = `${baseName} ${numPad}/${total}`
+  let   key      = 'init'
+
+  for (let page = 1; page <= 3; page++) {
+    try {
+      const body = new URLSearchParams({ opc: 'nextPage', page: String(page), totalReg: '0', tipo: '1', search, orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key })
+      const r    = await fetch(LIGA_AJAX, { method: 'POST', headers: AJAX_HDR, body: body.toString() })
+      if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
+
+      const json = await r.json()
+      key        = json.key ?? key
+      const cards = parseAjaxHtml(json.html ?? '')
+      const match = cards.find(c => c.num.padStart(3, '0') === numPad && c.total === String(total))
+
+      if (match && (match.avg ?? 0) > 0) {
+        return res.json({ avg: match.avg, min: match.min, max: match.max, found: true })
+      }
+
+      if (!json.nextPage) break
+    } catch (e) {
+      return res.status(500).json({ error: String(e) })
+    }
+  }
+
+  res.json({ found: false })
 })
 
 app.get('/fetch', async (req, res) => {
