@@ -19,10 +19,12 @@ const HEADERS = {
 async function getBrowser() {
   if (browser?.isConnected()) return browser
 
+  // Porta 10000 = sticky session (mesmo IP para todos os requests da sessão)
+  // Necessário para o Cloudflare Turnstile validar o token corretamente
   browser = await chromium.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
     proxy: PROXY_USER ? {
-      server:   'http://gate.decodo.com:10001',
+      server:   'http://gate.decodo.com:10000',
       username: PROXY_USER,
       password: PROXY_PASS,
     } : undefined,
