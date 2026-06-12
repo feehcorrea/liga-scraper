@@ -14,17 +14,16 @@ const PROXY_DISABLED = process.env.PROXY_DISABLED === 'true'
 
 async function getBrowser() {
   if (browser?.isConnected()) return browser
-  // Sticky session: mesmo IP residencial para todos os requests da sessão
-  // Evita que o Cloudflare rejeite o challenge por troca de IP
-  const sessionId = `pokespace-${Date.now()}`
-  const proxyUrl  = PROXY_USER
-    ? `http://${PROXY_USER}-session-${sessionId}:${PROXY_PASS}@gate.decodo.com:10001`
-    : null
-
-  console.log('[browser] lançando | proxy sticky:', !!proxyUrl)
+  // Sticky session: mesmo IP para toda a sessão (alphanumeric apenas)
+  const sessionId = 'ps' + Date.now().toString(36)  // ex: "psooo64800"
+  console.log('[browser] lançando | sticky session:', sessionId)
   browser = await chromium.launch({
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    proxy: proxyUrl ? { server: 'http://gate.decodo.com:10001', username: `${PROXY_USER}-session-${sessionId}`, password: PROXY_PASS } : undefined,
+    proxy: PROXY_USER ? {
+      server:   'http://gate.decodo.com:10001',
+      username: `${PROXY_USER}-session-${sessionId}`,
+      password: PROXY_PASS,
+    } : undefined,
   })
 
   // Visita a página principal da Liga para obter o cookie cf_clearance
