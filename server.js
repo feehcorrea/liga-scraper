@@ -49,8 +49,13 @@ app.get('/fetch', async (req, res) => {
       return res.send(html)
     }
 
-    console.warn('[fetch] no liga content for', url)
-    return res.status(502).json({ error: 'sem conteúdo da Liga' })
+    const title = await page.title().catch(() => '?')
+    console.warn('[fetch] no liga content for', url, '| title:', title)
+    return res.status(502).json({
+      error: 'sem conteúdo da Liga',
+      title,
+      preview: html.slice(0, 500),
+    })
 
   } catch (e) {
     console.error('[fetch] erro:', e.message)
