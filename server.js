@@ -71,13 +71,20 @@ app.get('/fetch', async (req, res) => {
       await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
     }
 
-    // Aguarda dados da Liga aparecerem no DOM (até 10s)
+    // Garante que estamos na URL da Liga (não numa página de erro)
+    await page.waitForURL(/ligapokemon\.com\.br/, { timeout: 15000 }).catch(() => {})
+
+    // Espera o DOM estar pronto
+    await page.waitForLoadState('domcontentloaded').catch(() => {})
+
+    // Aguarda dados da Liga aparecerem no DOM (até 15s)
     await page.waitForFunction(
       () => typeof window.cards_editions !== 'undefined' || typeof window.cards_stock !== 'undefined',
-      { timeout: 10000 }
+      { timeout: 15000 }
     ).catch(() => {})
 
-    const html  = await page.content()
+    // Usa evaluate para garantir que pega o HTML atual (não de uma navegação anterior)
+    const html  = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
     const title = await page.title().catch(() => '?')
     const pgUrl = page.url()
 
