@@ -60,6 +60,31 @@ async function getBrowser() {
 
 app.get('/ping', (_req, res) => res.json({ ok: true, warm: warmStatus }))
 
+// Proxy simples para o AJAX da Liga — sem Playwright, só fetch
+app.get('/ajax-prices', async (req, res) => {
+  const { search } = req.query
+  if (!search) return res.status(400).json({ error: 'search obrigatório' })
+  try {
+    const body = new URLSearchParams({
+      opc: 'nextPage', page: '1', totalReg: '0', tipo: '1',
+      search: String(search), orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key: 'init',
+    })
+    const r = await fetch('https://www.ligapokemon.com.br/ajax/cards/main.php', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+      },
+      body: body.toString(),
+    })
+    res.json({ status: r.status, ok: r.ok, size: (await r.text()).length })
+  } catch (e) {
+    res.status(500).json({ error: String(e) })
+  }
+})
+
 app.get('/fetch', async (req, res) => {
   const url = req.query.url
   if (!url) return res.status(400).json({ error: 'url obrigatória' })
