@@ -160,6 +160,63 @@ app.get('/liga-prices', async (req, res) => {
   res.json({ found: false })
 })
 
+// GET /liga-sealed-prices?name=...&ref=...&pcode=...
+// ref = ligaProductRef() = "(PT) Box de Booster Megaevolução Caos Ascendente"
+// Usa o mesmo AJAX da Liga mas com tipo=2 (produto) e busca pelo ref
+app.get('/liga-sealed-prices', async (req, res) => {
+  const { name, ref, pcode } = req.query
+  if (!name) return res.status(400).json({ error: 'name obrigatório' })
+
+  const search = ref ? String(ref) : String(name)
+
+  // O AJAX de produtos usa o mesmo endpoint mas com tipo=2
+  // Tenta buscar e extrai price-min/avg/max do HTML retornado
+  let key = 'init'
+
+  for (let page = 1; page <= 3; page++) {
+    try {
+      const body = new URLSearchParams({
+        opc:      'nextPage',
+        page:     String(page),
+        totalReg: '0',
+        tipo:     '2',   // tipo 2 = produtos/selados
+        search,
+        orderBy:  '',
+        fav:      '0',
+        iTCG:     '2',
+        idPokemon:'0',
+        key,
+        ...(pcode ? { pcode: String(pcode) } : {}),
+      })
+      const r = await fetch(LIGA_AJAX, { method: 'POST', headers: AJAX_HDR, body: body.toString() })
+      if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
+
+      const json = await r.json()
+      key        = json.key ?? key
+      const html = json.html ?? ''
+
+      // Extrai price-min, price-avg, price-max
+      const minM = html.match(/class="price-min"[^>]*>([^<]+)/)
+      const avgM = html.match(/class="price-avg"[^>]*>([^<]+)/)
+      const maxM = html.match(/class="price-max"[^>]*>([^<]+)/)
+
+      const avg = parsePrice(avgM?.[1])
+      const min = parsePrice(minM?.[1])
+      const max = parsePrice(maxM?.[1])
+
+      if (avg && avg > 0) {
+        return res.json({ found: true, avg, min, max })
+      }
+
+      if (!json.nextPage) break
+    } catch (e) {
+      return res.status(500).json({ error: String(e) })
+    }
+  }
+
+  res.json({ found: false })
+})
+
 app.get('/fetch', async (req, res) => {
   const url = req.query.url
   if (!url) return res.status(400).json({ error: 'url obrigatória' })
