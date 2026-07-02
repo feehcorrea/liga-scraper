@@ -269,5 +269,66 @@ app.get('/fetch', async (req, res) => {
   }
 })
 
+// ── Embedding visual (scan de cartas pokespace) ──────────────────────────────
+// POST /embed { imageBase64 } → { embedding: number[768], ms }
+// Modelo SigLIP base patch16-224 q8 (~95MB, baixado no build do Docker)
+
+const EMBED_MODEL = 'Xenova/siglip-base-patch16-224'
+let embedReady = false
+let embedPipeline = null
+
+function getEmbedder() {
+  if (!embedPipeline) {
+    embedPipeline = (async () => {
+      const { AutoProcessor, SiglipVisionModel, RawImage } = await import('@huggingface/transformers')
+      console.log('[embed] carregando SigLIP...')
+      const processor = await AutoProcessor.from_pretrained(EMBED_MODEL)
+      const model     = await SiglipVisionModel.from_pretrained(EMBED_MODEL, { dtype: 'q8' })
+      embedReady = true
+      console.log('[embed] SigLIP pronto')
+      return { processor, model, RawImage }
+    })()
+    embedPipeline.catch(e => {
+      console.error('[embed] falha ao carregar modelo:', e.message)
+      embedPipeline = null
+    })
+  }
+  return embedPipeline
+}
+getEmbedder() // pré-carrega no boot (keepalive mantém o serviço acordado)
+
+// Fila: 1 inferência por vez para não estourar RAM no free tier
+let embedQueue = Promise.resolve()
+function enqueueEmbed(fn) {
+  const run = embedQueue.then(fn, fn)
+  embedQueue = run.catch(() => {})
+  return run
+}
+
+app.get('/health', (_req, res) => res.json({ ok: true, model: EMBED_MODEL, ready: embedReady }))
+
+app.post('/embed', express.json({ limit: '8mb' }), async (req, res) => {
+  try {
+    const { imageBase64 } = req.body ?? {}
+    if (!imageBase64) return res.status(400).json({ error: 'imageBase64 obrigatório' })
+
+    const { processor, model, RawImage } = await getEmbedder()
+    const t0 = Date.now()
+    const embedding = await enqueueEmbed(async () => {
+      const data  = String(imageBase64).replace(/^data:image\/[^;]+;base64,/, '')
+      const image = await RawImage.fromBlob(new Blob([Buffer.from(data, 'base64')]))
+      const inputs = await processor([image])
+      const { pooler_output } = await model(inputs)
+      const vec  = pooler_output.tolist()[0]
+      const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1
+      return vec.map(v => v / norm)
+    })
+    res.json({ embedding, ms: Date.now() - t0 })
+  } catch (e) {
+    console.error('[embed] erro:', e.message)
+    res.status(400).json({ error: e.message })
+  }
+})
+
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => console.log(`liga-scraper porta ${PORT}`))
