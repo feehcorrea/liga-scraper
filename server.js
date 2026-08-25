@@ -269,5 +269,88 @@ app.get('/fetch', async (req, res) => {
   }
 })
 
+// ── Listagens por loja/condição (preço por qualid, sem CSS a decodificar) ────
+// Reaproveita o /fetch (Playwright + browser aquecido) pra carregar a página
+// geral do card e extrai o array `cards_stock` embutido no HTML — já vem com
+// qualid/idioma/lj_id em texto puro; só o preço de alguns itens (os
+// "impulsionados") vem ofuscado via precoCss, daí o fallback na vitrine.
+app.get('/liga-card-listings', async (req, res) => {
+  const url = req.query.url
+  if (!url) return res.status(400).json({ error: 'url obrigatória' })
+
+  let page = null
+  try {
+    const b = await getBrowser()
+    page = await b.newPage()
+    await page.setExtraHTTPHeaders(HEADERS)
+
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 })
+
+    const title1 = await page.title().catch(() => '')
+    if (title1.includes('momento') || title1.includes('moment')) {
+      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
+    }
+
+    await page.waitForFunction(
+      () => typeof window.cards_stock !== 'undefined',
+      { timeout: 15000 }
+    ).catch(() => {})
+
+    const html = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
+
+    const m = html.match(/var cards_stock = (\[[\s\S]*?\]);/)
+    if (!m) return res.status(502).json({ error: 'cards_stock não encontrado', size: html.length })
+
+    let raw
+    try { raw = JSON.parse(m[1]) } catch (e) { return res.status(502).json({ error: 'JSON inválido: ' + e.message }) }
+
+    // Só repassa os campos não-ofuscados que interessam — preço só quando vier limpo.
+    const listings = raw.map(item => ({
+      qualid:  String(item.qualid),
+      idioma:  String(item.idioma),
+      extras:  item.extras ?? null,
+      lj_id:   item.lj_id,
+      isGraded: !!item.is_graded,
+      price:   item.precoFinal != null ? parseFloat(item.precoFinal) : (item.preco != null ? parseFloat(item.preco) : null),
+    }))
+
+    return res.json({ found: true, listings })
+  } catch (e) {
+    console.error('[liga-card-listings] erro:', e.message)
+    return res.status(500).json({ error: e.message })
+  } finally {
+    try { await page?.close() } catch {}
+  }
+})
+
+// GET /liga-store-showcase?store=97457&q=Pikachu+ex+(057/191)
+// AJAX da vitrine da própria loja — retorna preço/condição limpos, sem CSS.
+app.get('/liga-store-showcase', async (req, res) => {
+  const { store, q } = req.query
+  if (!store || !q) return res.status(400).json({ error: 'store e q obrigatórios' })
+
+  const params = new URLSearchParams({
+    opc:               'showcase',
+    tcg:               '2',
+    store:             String(store),
+    show:              'cards',
+    'filters[text]':   String(q),
+    pageStart:         '0',
+    pageCount:         '20',
+  })
+
+  try {
+    const r = await fetch(`https://www.ligapokemon.com.br/ajax/mp/marketplace.php?${params}`, {
+      headers: AJAX_HDR,
+    })
+    if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
+    const json = await r.json()
+    if (json?.error) return res.json({ found: false, itens: [] })
+    return res.json({ found: true, itens: json.itens ?? [] })
+  } catch (e) {
+    return res.status(500).json({ error: String(e) })
+  }
+})
+
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => console.log(`liga-scraper porta ${PORT}`))
