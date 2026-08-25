@@ -284,16 +284,18 @@ app.get('/liga-card-listings', async (req, res) => {
     page = await b.newPage()
     await page.setExtraHTTPHeaders(HEADERS)
 
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 })
+    // networkidle trava nessa página (trackers/ads nunca param) — domcontentloaded
+    // + esperar cards_stock aparecer no window é um sinal muito mais direto.
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
 
     const title1 = await page.title().catch(() => '')
     if (title1.includes('momento') || title1.includes('moment')) {
-      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
     }
 
     await page.waitForFunction(
       () => typeof window.cards_stock !== 'undefined',
-      { timeout: 15000 }
+      { timeout: 20000 }
     ).catch(() => {})
 
     const html = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
