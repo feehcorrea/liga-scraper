@@ -5,8 +5,9 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 chromium.use(StealthPlugin())
 
 const app = express()
-let browser     = null
-let warmStatus  = { done: false, title: '', hasCookie: false }
+let browser       = null
+let browserUses   = 0
+let warmStatus    = { done: false, title: '', hasCookie: false }
 
 const PROXY_USER = process.env.DECODO_USER
 const PROXY_PASS = process.env.DECODO_PASS
@@ -16,8 +17,32 @@ const HEADERS = {
   'Referer':         'https://www.ligapokemon.com.br/',
 }
 
+// Fila simples: só 1 página do Playwright aberta por vez. Com o proxy
+// residencial fora do ar, toda navegação fica presa até o timeout — sem essa
+// fila, chamadas simultâneas (cron + usuário) multiplicavam páginas presas ao
+// mesmo tempo no mesmo browser, cada uma segurando memória por vários
+// segundos, até estourar o limite da instância no Render.
+let queueTail = Promise.resolve()
+function withBrowserQueue(fn) {
+  const run = queueTail.then(fn, fn)
+  queueTail = run.catch(() => {})
+  return run
+}
+
+// Reinicia o browser a cada N usos — Chromium de longa duração tende a
+// inchar em memória mesmo fechando página por página corretamente.
+const MAX_BROWSER_USES = 30
+
 async function getBrowser() {
-  if (browser?.isConnected()) return browser
+  if (browser?.isConnected() && browserUses < MAX_BROWSER_USES) {
+    browserUses++
+    return browser
+  }
+  if (browser) {
+    try { await browser.close() } catch {}
+    browser = null
+  }
+  browserUses = 1
 
   // Porta 10000 = sticky session (mesmo IP para todos os requests da sessão)
   // Necessário para o Cloudflare Turnstile validar o token corretamente
@@ -221,6 +246,7 @@ app.get('/fetch', async (req, res) => {
   const url = req.query.url
   if (!url) return res.status(400).json({ error: 'url obrigatória' })
 
+  await withBrowserQueue(async () => {
   let page = null
   try {
     const b = await getBrowser()
@@ -233,17 +259,20 @@ app.get('/fetch', async (req, res) => {
         responses.push(`${r.status()} ${r.url().slice(0,70)}`)
     })
 
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 })
+    // Timeout baixo de propósito: com o proxy residencial fora do ar, uma
+    // navegação que não vai dar certo mesmo assim ficava presa até 45s
+    // segurando memória — falhar rápido aqui é melhor que memória vazando.
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 12000 })
 
     const title1 = await page.title().catch(() => '')
     if (title1.includes('momento') || title1.includes('moment')) {
       console.log('[fetch] ainda no challenge, aguardando...')
-      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 20000 }).catch(() => {})
+      await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 8000 }).catch(() => {})
     }
 
     await page.waitForFunction(
       () => typeof window.cards_editions !== 'undefined' || typeof window.cards_stock !== 'undefined',
-      { timeout: 15000 }
+      { timeout: 8000 }
     ).catch(() => {})
 
     const html  = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
@@ -267,6 +296,7 @@ app.get('/fetch', async (req, res) => {
   } finally {
     try { await page?.close() } catch {}
   }
+  })
 })
 
 // ── Listagens por loja/condição (preço por qualid, sem CSS a decodificar) ────
@@ -278,6 +308,7 @@ app.get('/liga-card-listings', async (req, res) => {
   const url = req.query.url
   if (!url) return res.status(400).json({ error: 'url obrigatória' })
 
+  await withBrowserQueue(async () => {
   let page = null
   try {
     const b = await getBrowser()
@@ -286,16 +317,18 @@ app.get('/liga-card-listings', async (req, res) => {
 
     // networkidle trava nessa página (trackers/ads nunca param) — domcontentloaded
     // + esperar cards_stock aparecer no window é um sinal muito mais direto.
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    // Timeouts baixos de propósito (ver /fetch): falhar rápido é melhor que
+    // segurar memória enquanto o proxy residencial estiver fora do ar.
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12000 })
 
     const title1 = await page.title().catch(() => '')
     if (title1.includes('momento') || title1.includes('moment')) {
-      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 8000 }).catch(() => {})
     }
 
     await page.waitForFunction(
       () => typeof window.cards_stock !== 'undefined',
-      { timeout: 20000 }
+      { timeout: 8000 }
     ).catch(() => {})
 
     const html = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
@@ -323,6 +356,7 @@ app.get('/liga-card-listings', async (req, res) => {
   } finally {
     try { await page?.close() } catch {}
   }
+  })
 })
 
 // GET /liga-store-showcase?store=97457&q=Pikachu+ex+(057/191)
