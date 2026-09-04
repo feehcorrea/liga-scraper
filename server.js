@@ -388,5 +388,41 @@ app.get('/liga-store-showcase', async (req, res) => {
   }
 })
 
+// GET /liga-latest-sales?cardId=796&cardEd=406&cardNum=125&cookie=...
+// Proxy do histórico de vendas (opc=latestsales) — a Vercel toma 403 do
+// Cloudflare nesse endpoint específico, o IP do Render passa. Exige cookie
+// de uma sessão logada (a Liga bloqueia latestsales pra visitante anônimo).
+app.get('/liga-latest-sales', async (req, res) => {
+  const { cardId, cardEd, cardNum, cookie, tcg, filterPeriod } = req.query
+  if (!cardId || !cardEd || !cardNum || !cookie) {
+    return res.status(400).json({ error: 'cardId, cardEd, cardNum e cookie são obrigatórios' })
+  }
+
+  const params = new URLSearchParams({
+    opc:            'latestsales',
+    tcg:            String(tcg || '2'),
+    card_id:        String(cardId),
+    card_ed:        String(cardEd),
+    card_num:       String(cardNum),
+    filter_set:     '',
+    filter_cond:    '-1',
+    filter_extras:  '-1',
+    filter_period:  String(filterPeriod || '2'),
+    has_extras:     '0',
+  })
+
+  try {
+    const r = await fetch(`https://www.ligapokemon.com.br/ajax/mp/marketplace.php?${params}`, {
+      headers: { ...AJAX_HDR, Cookie: String(cookie) },
+    })
+    if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
+    const json = await r.json()
+    if (json?.error) return res.json({ data: null, error: json.message || 'Liga retornou erro' })
+    return res.json({ data: json })
+  } catch (e) {
+    return res.status(500).json({ error: String(e) })
+  }
+})
+
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => console.log(`liga-scraper porta ${PORT}`))
