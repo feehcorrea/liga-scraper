@@ -169,7 +169,11 @@ app.get('/liga-prices', async (req, res) => {
       const b = await getBrowser()
       page = await b.newPage()
       await page.setExtraHTTPHeaders(HEADERS)
-      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 12000 })
+      // Timeout mais folgado que os outros endpoints (12s): esse é o primeiro
+      // acesso da página, então às vezes ainda pega o desafio do Cloudflare
+      // sendo resolvido (o /ping mostrou isso levando alguns segundos a mais
+      // que uma navegação já com cf_clearance quente).
+      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
 
       let key = 'init'
       for (let pageNum = 1; pageNum <= 3; pageNum++) {
@@ -177,7 +181,7 @@ app.get('/liga-prices', async (req, res) => {
 
         const result = await page.evaluate(async ({ url, body, headers }) => {
           try {
-            const r = await fetch(url, { method: 'POST', headers, body })
+            const r = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(10000) })
             if (!r.ok) return { error: `HTTP ${r.status}` }
             return { data: await r.json() }
           } catch (e) {
@@ -233,7 +237,11 @@ app.get('/liga-sealed-prices', async (req, res) => {
       const b = await getBrowser()
       page = await b.newPage()
       await page.setExtraHTTPHeaders(HEADERS)
-      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 12000 })
+      // Timeout mais folgado que os outros endpoints (12s): esse é o primeiro
+      // acesso da página, então às vezes ainda pega o desafio do Cloudflare
+      // sendo resolvido (o /ping mostrou isso levando alguns segundos a mais
+      // que uma navegação já com cf_clearance quente).
+      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
 
       let key = 'init'
       for (let pageNum = 1; pageNum <= 3; pageNum++) {
@@ -253,7 +261,7 @@ app.get('/liga-sealed-prices', async (req, res) => {
 
         const result = await page.evaluate(async ({ url, body, headers }) => {
           try {
-            const r = await fetch(url, { method: 'POST', headers, body })
+            const r = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(10000) })
             if (!r.ok) return { error: `HTTP ${r.status}` }
             return { data: await r.json() }
           } catch (e) {
