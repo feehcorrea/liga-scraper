@@ -140,6 +140,15 @@ function parseAjaxHtml(html) {
 }
 
 // GET /liga-prices?name=Charizard+ex&num=006&total=165&ref=Charizard+ex+006/165
+//
+// Antes fazia fetch() cru do Node direto pro AJAX da Liga. Isso passou a levar
+// 403 (achado 2026-09): a Liga aparentemente passou a exigir um fingerprint de
+// navegador de verdade nesse endpoint especificamente — o /ping mostra que o
+// MESMO IP do Render carrega a home normal via Playwright, sem desafio nenhum.
+// Fix: faz a chamada AJAX de DENTRO de uma página já navegada pro domínio da
+// Liga (fetch() do próprio browser, mesmas cookies/TLS/HTTP2 de um Chrome
+// real) em vez de fetch() do Node. Precisa estar navegado no domínio antes,
+// senão o fetch cross-origin dentro da página é bloqueado por CORS.
 app.get('/liga-prices', async (req, res) => {
   const { name, num, total, ref } = req.query
   if (!name || !num || !total) return res.status(400).json({ error: 'name, num, total obrigatórios' })
@@ -154,35 +163,55 @@ app.get('/liga-prices', async (req, res) => {
   // Para matching: normaliza número removendo zeros à esquerda para comparar
   const numNorm = String(num).replace(/^0+(\d)/, '$1')
 
-  let key = 'init'
-
-  for (let page = 1; page <= 3; page++) {
+  await withBrowserQueue(async () => {
+    let page = null
     try {
-      const body = new URLSearchParams({ opc: 'nextPage', page: String(page), totalReg: '0', tipo: '1', search, orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key })
-      const r    = await fetch(LIGA_AJAX, { method: 'POST', headers: AJAX_HDR, body: body.toString() })
-      if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
+      const b = await getBrowser()
+      page = await b.newPage()
+      await page.setExtraHTTPHeaders(HEADERS)
+      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 12000 })
 
-      const json = await r.json()
-      key        = json.key ?? key
-      const cards = parseAjaxHtml(json.html ?? '')
+      let key = 'init'
+      for (let pageNum = 1; pageNum <= 3; pageNum++) {
+        const body = new URLSearchParams({ opc: 'nextPage', page: String(pageNum), totalReg: '0', tipo: '1', search, orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key }).toString()
 
-      // Tenta match exato primeiro, depois match por número normalizado
-      const match = cards.find(c => {
-        const cNorm = c.num.replace(/^0+(\d)/, '$1')
-        return (c.num === String(num) || c.num === numPad || cNorm === numNorm)
-      })
+        const result = await page.evaluate(async ({ url, body, headers }) => {
+          try {
+            const r = await fetch(url, { method: 'POST', headers, body })
+            if (!r.ok) return { error: `HTTP ${r.status}` }
+            return { data: await r.json() }
+          } catch (e) {
+            return { error: String(e) }
+          }
+        }, { url: LIGA_AJAX, body, headers: AJAX_HDR })
 
-      if (match && (match.avg ?? 0) > 0) {
-        return res.json({ avg: match.avg, min: match.min, max: match.max, found: true })
+        if (result.error) { res.status(502).json({ error: `Liga ${result.error}` }); return }
+
+        const json  = result.data
+        key         = json.key ?? key
+        const cards = parseAjaxHtml(json.html ?? '')
+
+        // Tenta match exato primeiro, depois match por número normalizado
+        const match = cards.find(c => {
+          const cNorm = c.num.replace(/^0+(\d)/, '$1')
+          return (c.num === String(num) || c.num === numPad || cNorm === numNorm)
+        })
+
+        if (match && (match.avg ?? 0) > 0) {
+          res.json({ avg: match.avg, min: match.min, max: match.max, found: true })
+          return
+        }
+
+        if (!json.nextPage) break
       }
 
-      if (!json.nextPage) break
+      res.json({ found: false })
     } catch (e) {
-      return res.status(500).json({ error: String(e) })
+      res.status(500).json({ error: String(e) })
+    } finally {
+      try { await page?.close() } catch {}
     }
-  }
-
-  res.json({ found: false })
+  })
 })
 
 // GET /liga-sealed-prices?name=...&ref=...&pcode=...
@@ -195,51 +224,73 @@ app.get('/liga-sealed-prices', async (req, res) => {
   const search = ref ? String(ref) : String(name)
 
   // O AJAX de produtos usa o mesmo endpoint mas com tipo=2
-  // Tenta buscar e extrai price-min/avg/max do HTML retornado
-  let key = 'init'
-
-  for (let page = 1; page <= 3; page++) {
+  // Tenta buscar e extrai price-min/avg/max do HTML retornado.
+  // Mesmo fix do /liga-prices: chamada feita de dentro da página (fetch do
+  // browser), não fetch() cru do Node — ver comentário lá.
+  await withBrowserQueue(async () => {
+    let page = null
     try {
-      const body = new URLSearchParams({
-        opc:      'nextPage',
-        page:     String(page),
-        totalReg: '0',
-        tipo:     '2',   // tipo 2 = produtos/selados
-        search,
-        orderBy:  '',
-        fav:      '0',
-        iTCG:     '2',
-        idPokemon:'0',
-        key,
-        ...(pcode ? { pcode: String(pcode) } : {}),
-      })
-      const r = await fetch(LIGA_AJAX, { method: 'POST', headers: AJAX_HDR, body: body.toString() })
-      if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
+      const b = await getBrowser()
+      page = await b.newPage()
+      await page.setExtraHTTPHeaders(HEADERS)
+      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 12000 })
 
-      const json = await r.json()
-      key        = json.key ?? key
-      const html = json.html ?? ''
+      let key = 'init'
+      for (let pageNum = 1; pageNum <= 3; pageNum++) {
+        const body = new URLSearchParams({
+          opc:      'nextPage',
+          page:     String(pageNum),
+          totalReg: '0',
+          tipo:     '2',   // tipo 2 = produtos/selados
+          search,
+          orderBy:  '',
+          fav:      '0',
+          iTCG:     '2',
+          idPokemon:'0',
+          key,
+          ...(pcode ? { pcode: String(pcode) } : {}),
+        }).toString()
 
-      // Extrai price-min, price-avg, price-max
-      const minM = html.match(/class="price-min"[^>]*>([^<]+)/)
-      const avgM = html.match(/class="price-avg"[^>]*>([^<]+)/)
-      const maxM = html.match(/class="price-max"[^>]*>([^<]+)/)
+        const result = await page.evaluate(async ({ url, body, headers }) => {
+          try {
+            const r = await fetch(url, { method: 'POST', headers, body })
+            if (!r.ok) return { error: `HTTP ${r.status}` }
+            return { data: await r.json() }
+          } catch (e) {
+            return { error: String(e) }
+          }
+        }, { url: LIGA_AJAX, body, headers: AJAX_HDR })
 
-      const avg = parsePrice(avgM?.[1])
-      const min = parsePrice(minM?.[1])
-      const max = parsePrice(maxM?.[1])
+        if (result.error) { res.status(502).json({ error: `Liga ${result.error}` }); return }
 
-      if (avg && avg > 0) {
-        return res.json({ found: true, avg, min, max })
+        const json = result.data
+        key        = json.key ?? key
+        const html = json.html ?? ''
+
+        // Extrai price-min, price-avg, price-max
+        const minM = html.match(/class="price-min"[^>]*>([^<]+)/)
+        const avgM = html.match(/class="price-avg"[^>]*>([^<]+)/)
+        const maxM = html.match(/class="price-max"[^>]*>([^<]+)/)
+
+        const avg = parsePrice(avgM?.[1])
+        const min = parsePrice(minM?.[1])
+        const max = parsePrice(maxM?.[1])
+
+        if (avg && avg > 0) {
+          res.json({ found: true, avg, min, max })
+          return
+        }
+
+        if (!json.nextPage) break
       }
 
-      if (!json.nextPage) break
+      res.json({ found: false })
     } catch (e) {
-      return res.status(500).json({ error: String(e) })
+      res.status(500).json({ error: String(e) })
+    } finally {
+      try { await page?.close() } catch {}
     }
-  }
-
-  res.json({ found: false })
+  })
 })
 
 app.get('/fetch', async (req, res) => {
