@@ -139,35 +139,6 @@ function parseAjaxHtml(html) {
   return cards
 }
 
-// ── Bright Data Web Unlocker ─────────────────────────────────────────────────
-// A Liga passou a bloquear (Cloudflare 403) o fetch() cru do Node E até
-// navegação real via Playwright a partir do IP do Render (achado 2026-09) —
-// não é fingerprint de request, é reputação de IP/ASN no nível do domínio
-// inteiro (mesmo diagnóstico já feito pra Liga Lorcana em 2026-08-22, ver
-// lorcspace/lib/lorcana-market-prices.ts). Testado ao vivo: proxy "ISP" da
-// Bright Data (IP residencial estático) TAMBÉM toma bloqueio explícito
-// (Cloudflare error 1005 = ASN em blocklist). O Web Unlocker (API dedicada,
-// não só proxy) passa — confirmado contra esse exato endpoint AJAX.
-const WEB_LOCKER_KEY  = process.env.WEB_LOCKER_KEY
-const WEB_LOCKER_ZONE = process.env.WEB_LOCKER_ZONE || 'web_unlocker1'
-
-async function unlockerFetch(url, { method = 'GET', body, headers = {} } = {}) {
-  if (!WEB_LOCKER_KEY) throw new Error('WEB_LOCKER_KEY não configurada')
-  const payload = { zone: WEB_LOCKER_ZONE, url, format: 'raw', method }
-  if (body != null) payload.body = body
-  if (Object.keys(headers).length) payload.headers = headers
-
-  return fetch('https://api.brightdata.com/request', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WEB_LOCKER_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(20000),
-  })
-}
-
 // GET /liga-prices?name=Charizard+ex&num=006&total=165&ref=Charizard+ex+006/165
 app.get('/liga-prices', async (req, res) => {
   const { name, num, total, ref } = req.query
@@ -183,15 +154,16 @@ app.get('/liga-prices', async (req, res) => {
   // Para matching: normaliza número removendo zeros à esquerda para comparar
   const numNorm = String(num).replace(/^0+(\d)/, '$1')
 
-  try {
-    let key = 'init'
-    for (let page = 1; page <= 3; page++) {
-      const body = new URLSearchParams({ opc: 'nextPage', page: String(page), totalReg: '0', tipo: '1', search, orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key }).toString()
-      const r = await unlockerFetch(LIGA_AJAX, { method: 'POST', body, headers: AJAX_HDR })
+  let key = 'init'
+
+  for (let page = 1; page <= 3; page++) {
+    try {
+      const body = new URLSearchParams({ opc: 'nextPage', page: String(page), totalReg: '0', tipo: '1', search, orderBy: '', fav: '0', iTCG: '2', idPokemon: '0', key })
+      const r    = await fetch(LIGA_AJAX, { method: 'POST', headers: AJAX_HDR, body: body.toString() })
       if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
 
-      const json  = await r.json()
-      key         = json.key ?? key
+      const json = await r.json()
+      key        = json.key ?? key
       const cards = parseAjaxHtml(json.html ?? '')
 
       // Tenta match exato primeiro, depois match por número normalizado
@@ -205,12 +177,12 @@ app.get('/liga-prices', async (req, res) => {
       }
 
       if (!json.nextPage) break
+    } catch (e) {
+      return res.status(500).json({ error: String(e) })
     }
-
-    res.json({ found: false })
-  } catch (e) {
-    res.status(500).json({ error: String(e) })
   }
+
+  res.json({ found: false })
 })
 
 // GET /liga-sealed-prices?name=...&ref=...&pcode=...
@@ -223,10 +195,11 @@ app.get('/liga-sealed-prices', async (req, res) => {
   const search = ref ? String(ref) : String(name)
 
   // O AJAX de produtos usa o mesmo endpoint mas com tipo=2
-  // Tenta buscar e extrai price-min/avg/max do HTML retornado.
-  try {
-    let key = 'init'
-    for (let page = 1; page <= 3; page++) {
+  // Tenta buscar e extrai price-min/avg/max do HTML retornado
+  let key = 'init'
+
+  for (let page = 1; page <= 3; page++) {
+    try {
       const body = new URLSearchParams({
         opc:      'nextPage',
         page:     String(page),
@@ -239,8 +212,8 @@ app.get('/liga-sealed-prices', async (req, res) => {
         idPokemon:'0',
         key,
         ...(pcode ? { pcode: String(pcode) } : {}),
-      }).toString()
-      const r = await unlockerFetch(LIGA_AJAX, { method: 'POST', body, headers: AJAX_HDR })
+      })
+      const r = await fetch(LIGA_AJAX, { method: 'POST', headers: AJAX_HDR, body: body.toString() })
       if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
 
       const json = await r.json()
@@ -261,12 +234,12 @@ app.get('/liga-sealed-prices', async (req, res) => {
       }
 
       if (!json.nextPage) break
+    } catch (e) {
+      return res.status(500).json({ error: String(e) })
     }
-
-    res.json({ found: false })
-  } catch (e) {
-    res.status(500).json({ error: String(e) })
   }
+
+  res.json({ found: false })
 })
 
 app.get('/fetch', async (req, res) => {
@@ -327,19 +300,38 @@ app.get('/fetch', async (req, res) => {
 })
 
 // ── Listagens por loja/condição (preço por qualid, sem CSS a decodificar) ────
-// Extrai o array `cards_stock` embutido no HTML da página do card — já vem com
+// Reaproveita o /fetch (Playwright + browser aquecido) pra carregar a página
+// geral do card e extrai o array `cards_stock` embutido no HTML — já vem com
 // qualid/idioma/lj_id em texto puro; só o preço de alguns itens (os
 // "impulsionados") vem ofuscado via precoCss, daí o fallback na vitrine.
-// Via Web Unlocker (não Playwright): `cards_stock` é uma var de <script> no
-// HTML fonte, não depende de JS rodando — um GET puro já traz ela.
 app.get('/liga-card-listings', async (req, res) => {
   const url = req.query.url
   if (!url) return res.status(400).json({ error: 'url obrigatória' })
 
+  await withBrowserQueue(async () => {
+  let page = null
   try {
-    const r = await unlockerFetch(url, { headers: HEADERS })
-    if (!r.ok) return res.status(502).json({ error: `Liga HTTP ${r.status}` })
-    const html = await r.text()
+    const b = await getBrowser()
+    page = await b.newPage()
+    await page.setExtraHTTPHeaders(HEADERS)
+
+    // networkidle trava nessa página (trackers/ads nunca param) — domcontentloaded
+    // + esperar cards_stock aparecer no window é um sinal muito mais direto.
+    // Timeouts baixos de propósito (ver /fetch): falhar rápido é melhor que
+    // segurar memória enquanto o proxy residencial estiver fora do ar.
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 12000 })
+
+    const title1 = await page.title().catch(() => '')
+    if (title1.includes('momento') || title1.includes('moment')) {
+      await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 8000 }).catch(() => {})
+    }
+
+    await page.waitForFunction(
+      () => typeof window.cards_stock !== 'undefined',
+      { timeout: 8000 }
+    ).catch(() => {})
+
+    const html = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
 
     const m = html.match(/var cards_stock = (\[[\s\S]*?\]);/)
     if (!m) return res.status(502).json({ error: 'cards_stock não encontrado', size: html.length })
@@ -361,7 +353,10 @@ app.get('/liga-card-listings', async (req, res) => {
   } catch (e) {
     console.error('[liga-card-listings] erro:', e.message)
     return res.status(500).json({ error: e.message })
+  } finally {
+    try { await page?.close() } catch {}
   }
+  })
 })
 
 // GET /liga-store-showcase?store=97457&q=Pikachu+ex+(057/191)
