@@ -139,6 +139,23 @@ function parseAjaxHtml(html) {
   return cards
 }
 
+// Página persistente, só pro AJAX de preços — reaproveitada entre chamadas em
+// vez de navegar a home da Liga de novo a cada consulta (isso sozinho levava
+// cada /liga-prices pra 30-45s). Só renavega se a página/browser foram
+// fechados (reciclagem do getBrowser a cada MAX_BROWSER_USES).
+let ajaxPage = null
+async function getAjaxPage() {
+  const b = await getBrowser()
+  if (ajaxPage && !ajaxPage.isClosed()) return ajaxPage
+  ajaxPage = await b.newPage()
+  await ajaxPage.setExtraHTTPHeaders(HEADERS)
+  // Timeout folgado só nessa navegação inicial (pode pegar o desafio do
+  // Cloudflare sendo resolvido) — as chamadas seguintes reaproveitam a página
+  // já carregada, sem pagar esse custo de novo.
+  await ajaxPage.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
+  return ajaxPage
+}
+
 // GET /liga-prices?name=Charizard+ex&num=006&total=165&ref=Charizard+ex+006/165
 //
 // Antes fazia fetch() cru do Node direto pro AJAX da Liga. Isso passou a levar
@@ -164,16 +181,8 @@ app.get('/liga-prices', async (req, res) => {
   const numNorm = String(num).replace(/^0+(\d)/, '$1')
 
   await withBrowserQueue(async () => {
-    let page = null
     try {
-      const b = await getBrowser()
-      page = await b.newPage()
-      await page.setExtraHTTPHeaders(HEADERS)
-      // Timeout mais folgado que os outros endpoints (12s): esse é o primeiro
-      // acesso da página, então às vezes ainda pega o desafio do Cloudflare
-      // sendo resolvido (o /ping mostrou isso levando alguns segundos a mais
-      // que uma navegação já com cf_clearance quente).
-      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
+      const page = await getAjaxPage()
 
       let key = 'init'
       for (let pageNum = 1; pageNum <= 3; pageNum++) {
@@ -212,8 +221,6 @@ app.get('/liga-prices', async (req, res) => {
       res.json({ found: false })
     } catch (e) {
       res.status(500).json({ error: String(e) })
-    } finally {
-      try { await page?.close() } catch {}
     }
   })
 })
@@ -232,16 +239,8 @@ app.get('/liga-sealed-prices', async (req, res) => {
   // Mesmo fix do /liga-prices: chamada feita de dentro da página (fetch do
   // browser), não fetch() cru do Node — ver comentário lá.
   await withBrowserQueue(async () => {
-    let page = null
     try {
-      const b = await getBrowser()
-      page = await b.newPage()
-      await page.setExtraHTTPHeaders(HEADERS)
-      // Timeout mais folgado que os outros endpoints (12s): esse é o primeiro
-      // acesso da página, então às vezes ainda pega o desafio do Cloudflare
-      // sendo resolvido (o /ping mostrou isso levando alguns segundos a mais
-      // que uma navegação já com cf_clearance quente).
-      await page.goto('https://www.ligapokemon.com.br/', { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {})
+      const page = await getAjaxPage()
 
       let key = 'init'
       for (let pageNum = 1; pageNum <= 3; pageNum++) {
@@ -295,8 +294,6 @@ app.get('/liga-sealed-prices', async (req, res) => {
       res.json({ found: false })
     } catch (e) {
       res.status(500).json({ error: String(e) })
-    } finally {
-      try { await page?.close() } catch {}
     }
   })
 })
